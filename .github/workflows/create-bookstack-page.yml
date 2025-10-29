@@ -1,0 +1,33 @@
+name: Create BookStack Page on New Issue
+
+on:
+  issues:
+    types: [opened, edited, closed]
+
+jobs:
+  createPage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create or update BookStack page
+        env:
+          BOOKSTACK_API_ID: ${{ secrets.BOOKSTACK_API_ID }}
+          BOOKSTACK_API_SECRET: ${{ secrets.BOOKSTACK_API_SECRET }}
+          BOOKSTACK_URL: ${{ secrets.BOOKSTACK_URL }}
+          BOOKSTACK_BOOK_ID: ${{ secrets.BOOKSTACK_BOOK_ID }}
+        run: |
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_BODY="${{ github.event.issue.body }}"
+          ISSUE_URL="${{ github.event.issue.html_url }}"
+          ISSUE_ACTION="${{ github.event.action }}"
+
+          echo "{
+            \"name\": \"$ISSUE_TITLE\",
+            \"book_id\": \"$BOOKSTACK_BOOK_ID\",
+            \"html\": \"<h2>Проблема</h2><p>${ISSUE_BODY}</p><h2>Связанная задача</h2><p><a href='$ISSUE_URL'>$ISSUE_URL</a></p><h2>Статус</h2><p>$ISSUE_ACTION</p>\"
+          }" > payload.json
+
+          curl -X POST "$BOOKSTACK_URL/api/pages" \
+            -H "Authorization: Token $BOOKSTACK_API_ID:$BOOKSTACK_API_SECRET" \
+            -H "Content-Type: application/json" \
+            -d @payload.json
