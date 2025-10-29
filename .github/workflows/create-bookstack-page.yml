@@ -1,33 +1,88 @@
-name: Create BookStack Page on New Issue
+name: BookStack Pages from GitHub Issues
 
 on:
   issues:
     types: [opened, edited, closed]
 
 jobs:
-  createPage:
+  manageBookStackPage:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install marked axios
+
       - name: Create or update BookStack page
         env:
+          BOOKSTACK_URL: ${{ secrets.BOOKSTACK_URL }}
           BOOKSTACK_API_ID: ${{ secrets.BOOKSTACK_API_ID }}
           BOOKSTACK_API_SECRET: ${{ secrets.BOOKSTACK_API_SECRET }}
-          BOOKSTACK_URL: ${{ secrets.BOOKSTACK_URL }}
           BOOKSTACK_BOOK_ID: ${{ secrets.BOOKSTACK_BOOK_ID }}
         run: |
-          ISSUE_TITLE="${{ github.event.issue.title }}"
-          ISSUE_BODY="${{ github.event.issue.body }}"
-          ISSUE_URL="${{ github.event.issue.html_url }}"
-          ISSUE_ACTION="${{ github.event.action }}"
+          node << 'EOF'
+          const fs = require('fs');
+          const axios = require('axios');
+          const marked = require('marked');
 
-          echo "{
-            \"name\": \"$ISSUE_TITLE\",
-            \"book_id\": \"$BOOKSTACK_BOOK_ID\",
-            \"html\": \"<h2>Проблема</h2><p>${ISSUE_BODY}</p><h2>Связанная задача</h2><p><a href='$ISSUE_URL'>$ISSUE_URL</a></p><h2>Статус</h2><p>$ISSUE_ACTION</p>\"
-          }" > payload.json
+          const BOOKSTACK_URL = process.env.BOOKSTACK_URL;
+          const BOOKSTACK_API_ID = process.env.BOOKSTACK_API_ID;
+          const BOOKSTACK_API_SECRET = process.env.BOOKSTACK_API_SECRET;
+          const BOOKSTACK_BOOK_ID = process.env.BOOKSTACK_BOOK_ID;
 
-          curl -X POST "$BOOKSTACK_URL/api/pages" \
-            -H "Authorization: Token $BOOKSTACK_API_ID:$BOOKSTACK_API_SECRET" \
-            -H "Content-Type: application/json" \
-            -d @payload.json
+          const issue = JSON.parse(process.env.GITHUB_EVENT_PATH).issue;
+          const action = JSON.parse(process.env.GITHUB_EVENT_PATH).action;
+
+          const pageName = issue.title;
+          const issueUrl = issue.html_url;
+          const markdownBody = issue.body || 'Нет описания';
+
+          const htmlBody = marked.parse(markdownBody) +
+            `<hr><p><strong>Связанная задача:</strong> <a href="${issueUrl}">${issueUrl}</a></p>
+             <p><strong>Статус:</strong> ${action}</p>`;
+
+          const payload = {
+            name: pageName,
+            book_id: BOOKSTACK_BOOK_ID,
+            html: htmlBody
+          };
+
+          const headers = {
+            'Authorization': `Token ${BOOKSTACK_API_ID}:${BOOKSTACK_API_SECRET}`,
+            'Content-Type': 'application/json'
+          };
+
+          async function createOrUpdate() {
+            try {
+              // Проверяем, есть ли страница с таким именем
+              const res = await axios.get(`${BOOKSTACK_URL}/api/pages`, { headers });
+              const existingPage = res.data.data.find(p => p.name === pageName);
+
+              if (action === 'closed' && existingPage) {
+                // Удаляем или архивируем страницу при закрытии Issue
+                await axios.delete(`${BOOKSTACK_URL}/api/pages/${existingPage.id}`, { headers });
+                console.log(`Page "${pageName}" удалена (Issue закрыта).`);
+              } else if (existingPage) {
+                // Обновляем существующую страницу
+                await axios.put(`${BOOKSTACK_URL}/api/pages/${existingPage.id}`, payload, { headers });
+                console.log(`Page "${pageName}" обновлена.`);
+              } else if (action !== 'closed') {
+                // Создаём новую страницу
+                await axios.post(`${BOOKSTACK_URL}/api/pages`, payload, { headers });
+                console.log(`Page "${pageName}" создана.`);
+              }
+            } catch (error) {
+              console.error('Ошибка при работе с BookStack API:', error.response?.data || error.message);
+              process.exit(1);
+            }
+          }
+
+          createOrUpdate();
+          EOF
